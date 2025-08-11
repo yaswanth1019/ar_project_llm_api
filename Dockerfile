@@ -34,8 +34,8 @@ RUN if [ ! -d "models/vosk-model-small-en-us-0.15" ]; then \
     rm vosk-model-small-en-us-0.15.zip; \
     fi
 
-# Expose port
+# Render will dynamically assign the port via $PORT
 EXPOSE 10000
 
-# Command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+# Run the app using the dynamic port
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
