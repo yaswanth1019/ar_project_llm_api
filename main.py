@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-PORT = int(os.environ.get("PORT", 10000))
+PORT = int(os.environ.get("PORT", 3000))
 
 
 # Import your modules
