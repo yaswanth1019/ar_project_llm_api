@@ -45,5 +45,5 @@ EXPOSE $PORT
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT:-10000}/health || exit 1
 
-# Start the app with single worker to minimize memory usage
-CMD python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --timeout-keep-alive 30
+# Start the app with explicit port binding and immediate startup
+CMD echo "Starting on port $PORT" && python -m uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --access-log --log-level info --timeout-keep-alive 30
