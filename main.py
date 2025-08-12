@@ -4,9 +4,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 import uuid
 import os
-import asyncio  # MISSING IMPORT!
+import asyncio
 from datetime import datetime
 from pathlib import Path
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Get port from environment - this is critical for Render
 PORT = int(os.environ.get("PORT", 10000))
@@ -22,16 +27,17 @@ load_dotenv()
 
 # Global flag to track if models are initialized
 models_initialized = False
+initialization_error = None
 
 async def initialize_models_async():
     """Initialize models asynchronously after server starts"""
-    global models_initialized
+    global models_initialized, initialization_error
     try:
-        print("🤖 Initializing models in background...")
+        logger.info("🤖 Initializing models in background...")
         
         # Check if running on Render (or other cloud platform)
         if not os.path.exists("models/vosk-model-small-en-us-0.15"):
-            print("📥 Vosk model not found. Downloading...")
+            logger.info("📥 Vosk model not found. Downloading...")
             # Download and extract model
             import urllib.request
             import zipfile
@@ -47,24 +53,27 @@ async def initialize_models_async():
                 zip_ref.extractall("models/")
             
             os.remove("models/model.zip")
-            print("✅ Vosk model downloaded and extracted")
+            logger.info("✅ Vosk model downloaded and extracted")
         
         # Initialize models in executor to avoid blocking
+        logger.info("🔄 Calling initialize_models()...")
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, initialize_models)
         models_initialized = True
-        print("✅ All models initialized successfully")
+        initialization_error = None
+        logger.info("✅ All models initialized successfully")
         
     except Exception as e:
-        print(f"❌ Failed to initialize models: {e}")
+        logger.error(f"❌ Failed to initialize models: {e}")
         models_initialized = False
+        initialization_error = str(e)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown"""
-    print("🔄 Application starting up...")
-    print(f"📍 Port: {PORT}")
-    print(f"🌍 Environment: {os.environ.get('RENDER', 'local')}")
+    logger.info("🔄 Application starting up...")
+    logger.info(f"📍 Port: {PORT}")
+    logger.info(f"🌍 Environment: {os.environ.get('RENDER', 'local')}")
     
     # Create background task for model initialization
     # Don't await it - let it run in background
@@ -73,7 +82,7 @@ async def lifespan(app: FastAPI):
     yield  # Server starts here
     
     # Cleanup on shutdown
-    print("🔄 Application shutting down...")
+    logger.info("🔄 Application shutting down...")
     if not task.done():
         task.cancel()
 
@@ -99,8 +108,9 @@ app.add_middleware(
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("responses", exist_ok=True)
 
-# ROOT ENDPOINT - Critical for Render port detection
+# ROOT ENDPOINT - Support both GET and HEAD for Render
 @app.get("/")
+@app.head("/")
 def read_root():
     """Root endpoint - must respond quickly for Render to detect the port"""
     return {
@@ -108,11 +118,13 @@ def read_root():
         "message": "AR Assistant API is running",
         "port": PORT,
         "models_ready": models_initialized,
+        "initialization_error": initialization_error,
         "timestamp": datetime.now().isoformat()
     }
 
-# HEALTH CHECK ENDPOINTS - Multiple for reliability
+# HEALTH CHECK ENDPOINTS - Support both GET and HEAD
 @app.get("/health")
+@app.head("/health")
 def health_check():
     """Primary health check endpoint"""
     return {
@@ -120,21 +132,25 @@ def health_check():
         "service": "ar-assistant",
         "port": PORT,
         "models_ready": models_initialized,
+        "initialization_error": initialization_error,
         "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/api/health")
+@app.head("/api/health")
 def api_health_check():
     """API health check endpoint"""
     return {
         "status": "healthy",
         "message": "AR Assistant API is running",
         "models_ready": models_initialized,
+        "initialization_error": initialization_error,
         "port": PORT,
         "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/ping")
+@app.head("/ping")
 def ping():
     """Simple ping endpoint"""
     return {"status": "pong", "port": PORT}
@@ -148,7 +164,10 @@ def system_check():
     # Check if models are initialized
     if not models_initialized:
         system_ready = False
-        recommendations.append("Models still initializing - please wait")
+        if initialization_error:
+            recommendations.append(f"Model initialization failed: {initialization_error}")
+        else:
+            recommendations.append("Models still initializing - please wait")
     
     # Check if required directories exist
     if not os.path.exists("uploads"):
@@ -162,6 +181,7 @@ def system_check():
     return {
         "system_ready": system_ready,
         "models_initialized": models_initialized,
+        "initialization_error": initialization_error,
         "recommendations": recommendations,
         "status": "ready" if system_ready else "initializing",
         "port": PORT,
@@ -174,12 +194,19 @@ async def transcribe_speech(audio: UploadFile = File(...)):
     """STT endpoint - transcribe audio to text"""
     try:
         if not models_initialized:
+            error_msg = f"Models still initializing"
+            if initialization_error:
+                error_msg += f": {initialization_error}"
+            else:
+                error_msg += ", please try again in a few moments"
+                
             return JSONResponse(
                 status_code=503,
                 content={
                     "success": False, 
-                    "error": "Models still initializing, please try again in a few moments",
-                    "models_ready": False
+                    "error": error_msg,
+                    "models_ready": False,
+                    "initialization_error": initialization_error
                 }
             )
             
@@ -200,7 +227,7 @@ async def transcribe_speech(audio: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Transcription error: {e}")
+        logger.error(f"Transcription error: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
@@ -211,11 +238,18 @@ async def get_answer(question: dict):
     """RAG endpoint - get answer for text question"""
     try:
         if not models_initialized:
+            error_msg = f"Models still initializing"
+            if initialization_error:
+                error_msg += f": {initialization_error}"
+            else:
+                error_msg += ", please try again in a few moments"
+                
             return JSONResponse(
                 status_code=503,
                 content={
                     "success": False, 
-                    "error": "Models still initializing, please try again in a few moments"
+                    "error": error_msg,
+                    "initialization_error": initialization_error
                 }
             )
             
@@ -233,7 +267,7 @@ async def get_answer(question: dict):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"RAG error: {e}")
+        logger.error(f"RAG error: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
@@ -260,7 +294,7 @@ async def synthesize_speech(text_data: dict):
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        print(f"TTS error: {e}")
+        logger.error(f"TTS error: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
@@ -271,11 +305,18 @@ async def rag_pipeline_endpoint(audio: UploadFile = File(...)):
     """RAG pipeline endpoint - STT + RAG combined"""
     try:
         if not models_initialized:
+            error_msg = f"Models still initializing"
+            if initialization_error:
+                error_msg += f": {initialization_error}"
+            else:
+                error_msg += ", please try again in a few moments"
+                
             return JSONResponse(
                 status_code=503,
                 content={
                     "success": False, 
-                    "error": "Models still initializing, please try again in a few moments"
+                    "error": error_msg,
+                    "initialization_error": initialization_error
                 }
             )
             
@@ -298,7 +339,7 @@ async def rag_pipeline_endpoint(audio: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"RAG Pipeline error: {e}")
+        logger.error(f"RAG Pipeline error: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
@@ -311,11 +352,18 @@ async def process_speech_pipeline(audio: UploadFile = File(...)):
     
     try:
         if not models_initialized:
+            error_msg = f"Models still initializing"
+            if initialization_error:
+                error_msg += f": {initialization_error}"
+            else:
+                error_msg += ", please try again in a few moments"
+                
             return JSONResponse(
                 status_code=503,
                 content={
                     "success": False, 
-                    "error": "Models still initializing, please try again in a few moments"
+                    "error": error_msg,
+                    "initialization_error": initialization_error
                 }
             )
             
@@ -329,7 +377,7 @@ async def process_speech_pipeline(audio: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Empty audio file")
         
         # Step 1: Speech to Text
-        print("Step 1: Converting speech to text...")
+        logger.info("Step 1: Converting speech to text...")
         stt_start = datetime.now()
         transcription = transcribe(audio_bytes)
         stt_time = (datetime.now() - stt_start).total_seconds() * 1000
@@ -337,18 +385,18 @@ async def process_speech_pipeline(audio: UploadFile = File(...)):
         if not transcription or transcription.strip() == "":
             raise HTTPException(status_code=400, detail="No speech detected in audio")
         
-        print(f"Transcription: {transcription}")
+        logger.info(f"Transcription: {transcription}")
         
         # Step 2: RAG (Get AI response)
-        print("Step 2: Getting AI response...")
+        logger.info("Step 2: Getting AI response...")
         rag_start = datetime.now()
         ai_response = get_rag_response(transcription)
         rag_time = (datetime.now() - rag_start).total_seconds() * 1000
         
-        print(f"AI Response: {ai_response}")
+        logger.info(f"AI Response: {ai_response}")
         
         # Step 3: Text to Speech
-        print("Step 3: Converting text to speech...")
+        logger.info("Step 3: Converting text to speech...")
         tts_start = datetime.now()
         audio_filename = f"response_{uuid.uuid4()}.wav"
         audio_path = f"responses/{audio_filename}"
@@ -359,7 +407,7 @@ async def process_speech_pipeline(audio: UploadFile = File(...)):
         
         total_time = (datetime.now() - start_time).total_seconds() * 1000
         
-        print(f"Pipeline completed in {total_time:.0f}ms")
+        logger.info(f"Pipeline completed in {total_time:.0f}ms")
         
         return {
             "success": True,
@@ -385,7 +433,7 @@ async def process_speech_pipeline(audio: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Pipeline error: {e}")
+        logger.error(f"Pipeline error: {e}")
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         return JSONResponse(
             status_code=500,
@@ -425,7 +473,7 @@ def clear_cache():
                     file.unlink()
                     cleaned_files += 1
                 except Exception as e:
-                    print(f"Failed to delete {file}: {e}")
+                    logger.error(f"Failed to delete {file}: {e}")
         
         # Clear upload files
         if upload_dir.exists():
@@ -435,7 +483,7 @@ def clear_cache():
                         file.unlink()
                         cleaned_files += 1
                 except Exception as e:
-                    print(f"Failed to delete {file}: {e}")
+                    logger.error(f"Failed to delete {file}: {e}")
         
         return {
             "success": True, 
@@ -443,7 +491,7 @@ def clear_cache():
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        print(f"Cache clear error: {e}")
+        logger.error(f"Cache clear error: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
@@ -469,7 +517,7 @@ def cleanup_files():
                                 file.unlink()
                                 cleaned_files += 1
                         except Exception as e:
-                            print(f"Failed to process {file}: {e}")
+                            logger.error(f"Failed to process {file}: {e}")
         
         return {
             "success": True,
@@ -477,7 +525,7 @@ def cleanup_files():
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        print(f"Cleanup error: {e}")
+        logger.error(f"Cleanup error: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
@@ -494,6 +542,7 @@ def get_system_status():
         return {
             "system_ready": models_initialized,
             "models_initialized": models_initialized,
+            "initialization_error": initialization_error,
             "response_files": response_files,
             "upload_files": upload_files,
             "port": PORT,
@@ -510,11 +559,18 @@ async def test_stt(audio: UploadFile = File(...)):
     """Test STT only"""
     try:
         if not models_initialized:
+            error_msg = f"Models still initializing"
+            if initialization_error:
+                error_msg += f": {initialization_error}"
+            else:
+                error_msg += ", please try again in a few moments"
+                
             return JSONResponse(
                 status_code=503,
                 content={
                     "success": False, 
-                    "error": "Models still initializing, please try again in a few moments"
+                    "error": error_msg,
+                    "initialization_error": initialization_error
                 }
             )
             
@@ -537,11 +593,18 @@ async def test_rag(question_data: dict):
     """Test RAG only"""
     try:
         if not models_initialized:
+            error_msg = f"Models still initializing"
+            if initialization_error:
+                error_msg += f": {initialization_error}"
+            else:
+                error_msg += ", please try again in a few moments"
+                
             return JSONResponse(
                 status_code=503,
                 content={
                     "success": False, 
-                    "error": "Models still initializing, please try again in a few moments"
+                    "error": error_msg,
+                    "initialization_error": initialization_error
                 }
             )
             
@@ -590,8 +653,8 @@ async def test_tts(text_data: dict):
 # For production deployment (Render will use this automatically)
 if __name__ == "__main__":
     import uvicorn
-    print(f"🚀 Starting AR Assistant API on port {PORT}")
-    print("📝 Make sure your rag_engine.py, stt.py, and tts.py modules are available")
+    logger.info(f"🚀 Starting AR Assistant API on port {PORT}")
+    logger.info("📝 Make sure your rag_engine.py, stt.py, and tts.py modules are available")
     
     uvicorn.run(
         app, 
