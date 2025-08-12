@@ -4,13 +4,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 import uuid
 import os
+import asyncio  # MISSING IMPORT!
 from datetime import datetime
 from pathlib import Path
 
 # Get port from environment - this is critical for Render
 PORT = int(os.environ.get("PORT", 10000))
 print(f"🚀 Starting server on port {PORT}")
-
 
 # Import your modules
 from rag_engine import build_rag_pipeline, get_rag_response, initialize_models
@@ -22,24 +22,6 @@ load_dotenv()
 
 # Global flag to track if models are initialized
 models_initialized = False
-
-# Update the model initialization to handle cloud deployment
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Handle application startup and shutdown"""
-    global models_initialized
-    
-    print("🔄 Application starting up...")
-    print(f"📍 Port: {PORT}")
-    print(f"🌍 Environment: {os.environ.get('RENDER', 'local')}")
-    
-    # Don't block startup with heavy model loading - do it async
-    asyncio.create_task(initialize_models_async())
-    
-    # Always yield to allow the server to start
-    yield
-    
-    print("🔄 Application shutting down...")
 
 async def initialize_models_async():
     """Initialize models asynchronously after server starts"""
@@ -56,7 +38,10 @@ async def initialize_models_async():
             
             os.makedirs("models", exist_ok=True)
             model_url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
-            urllib.request.urlretrieve(model_url, "models/model.zip")
+            
+            # Run in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, urllib.request.urlretrieve, model_url, "models/model.zip")
             
             with zipfile.ZipFile("models/model.zip", 'r') as zip_ref:
                 zip_ref.extractall("models/")
@@ -64,8 +49,9 @@ async def initialize_models_async():
             os.remove("models/model.zip")
             print("✅ Vosk model downloaded and extracted")
         
-        # Initialize models
-        await asyncio.get_event_loop().run_in_executor(None, initialize_models)
+        # Initialize models in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, initialize_models)
         models_initialized = True
         print("✅ All models initialized successfully")
         
@@ -73,10 +59,31 @@ async def initialize_models_async():
         print(f"❌ Failed to initialize models: {e}")
         models_initialized = False
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle application startup and shutdown"""
+    print("🔄 Application starting up...")
+    print(f"📍 Port: {PORT}")
+    print(f"🌍 Environment: {os.environ.get('RENDER', 'local')}")
+    
+    # Create background task for model initialization
+    # Don't await it - let it run in background
+    task = asyncio.create_task(initialize_models_async())
+    
+    yield  # Server starts here
+    
+    # Cleanup on shutdown
+    print("🔄 Application shutting down...")
+    if not task.done():
+        task.cancel()
+
+# Create FastAPI app
 app = FastAPI(
     title="AR Assistant API", 
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # CORS middleware
@@ -92,19 +99,45 @@ app.add_middleware(
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("responses", exist_ok=True)
 
+# ROOT ENDPOINT - Critical for Render port detection
 @app.get("/")
 def read_root():
-    return {"message": "AR Assistant API is running", "timestamp": datetime.now().isoformat()}
+    """Root endpoint - must respond quickly for Render to detect the port"""
+    return {
+        "status": "online",
+        "message": "AR Assistant API is running",
+        "port": PORT,
+        "models_ready": models_initialized,
+        "timestamp": datetime.now().isoformat()
+    }
+
+# HEALTH CHECK ENDPOINTS - Multiple for reliability
+@app.get("/health")
+def health_check():
+    """Primary health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "ar-assistant",
+        "port": PORT,
+        "models_ready": models_initialized,
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.get("/api/health")
-def health_check():
-    """Health check endpoint"""
+def api_health_check():
+    """API health check endpoint"""
     return {
         "status": "healthy",
         "message": "AR Assistant API is running",
         "models_ready": models_initialized,
+        "port": PORT,
         "timestamp": datetime.now().isoformat()
     }
+
+@app.get("/ping")
+def ping():
+    """Simple ping endpoint"""
+    return {"status": "pong", "port": PORT}
 
 @app.get("/api/system-check")
 def system_check():
@@ -115,7 +148,7 @@ def system_check():
     # Check if models are initialized
     if not models_initialized:
         system_ready = False
-        recommendations.append("Models not initialized - restart the server")
+        recommendations.append("Models still initializing - please wait")
     
     # Check if required directories exist
     if not os.path.exists("uploads"):
@@ -126,29 +159,29 @@ def system_check():
         system_ready = False
         recommendations.append("Create responses directory")
     
-    # Check if required modules can be imported
-    try:
-        from rag_engine import build_rag_pipeline, get_rag_response, initialize_models
-        from stt import transcribe
-        from tts import synthesize, tts_generate
-    except ImportError as e:
-        system_ready = False
-        recommendations.append(f"Missing required modules: {e}")
-    
     return {
         "system_ready": system_ready,
         "models_initialized": models_initialized,
         "recommendations": recommendations,
-        "status": "ready" if system_ready else "not_ready",
+        "status": "ready" if system_ready else "initializing",
+        "port": PORT,
         "timestamp": datetime.now().isoformat()
     }
 
+# Make all endpoints handle model loading gracefully
 @app.post("/api/speech/transcribe")
 async def transcribe_speech(audio: UploadFile = File(...)):
     """STT endpoint - transcribe audio to text"""
     try:
         if not models_initialized:
-            raise HTTPException(status_code=503, detail="Models not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False, 
+                    "error": "Models still initializing, please try again in a few moments",
+                    "models_ready": False
+                }
+            )
             
         if not audio.content_type or not audio.content_type.startswith('audio/'):
             raise HTTPException(status_code=400, detail="Invalid audio file format")
@@ -178,7 +211,13 @@ async def get_answer(question: dict):
     """RAG endpoint - get answer for text question"""
     try:
         if not models_initialized:
-            raise HTTPException(status_code=503, detail="Models not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False, 
+                    "error": "Models still initializing, please try again in a few moments"
+                }
+            )
             
         if "question" not in question:
             raise HTTPException(status_code=400, detail="Question field required")
@@ -232,7 +271,13 @@ async def rag_pipeline_endpoint(audio: UploadFile = File(...)):
     """RAG pipeline endpoint - STT + RAG combined"""
     try:
         if not models_initialized:
-            raise HTTPException(status_code=503, detail="Models not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False, 
+                    "error": "Models still initializing, please try again in a few moments"
+                }
+            )
             
         if not audio.content_type or not audio.content_type.startswith('audio/'):
             raise HTTPException(status_code=400, detail="Invalid audio file format")
@@ -266,7 +311,13 @@ async def process_speech_pipeline(audio: UploadFile = File(...)):
     
     try:
         if not models_initialized:
-            raise HTTPException(status_code=503, detail="Models not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False, 
+                    "error": "Models still initializing, please try again in a few moments"
+                }
+            )
             
         # Validate audio file
         if not audio.content_type or not audio.content_type.startswith('audio/'):
@@ -433,7 +484,6 @@ def cleanup_files():
         )
 
 # Additional utility endpoints
-
 @app.get("/api/status")
 def get_system_status():
     """Get detailed system status"""
@@ -446,6 +496,7 @@ def get_system_status():
             "models_initialized": models_initialized,
             "response_files": response_files,
             "upload_files": upload_files,
+            "port": PORT,
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
@@ -459,9 +510,15 @@ async def test_stt(audio: UploadFile = File(...)):
     """Test STT only"""
     try:
         if not models_initialized:
-            raise HTTPException(status_code=503, detail="Models not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False, 
+                    "error": "Models still initializing, please try again in a few moments"
+                }
+            )
             
-        audio_bytes = await audio.read()  # Fixed: Added await
+        audio_bytes = await audio.read()
         transcription = transcribe(audio_bytes)
         
         return {
@@ -480,7 +537,13 @@ async def test_rag(question_data: dict):
     """Test RAG only"""
     try:
         if not models_initialized:
-            raise HTTPException(status_code=503, detail="Models not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False, 
+                    "error": "Models still initializing, please try again in a few moments"
+                }
+            )
             
         if "question" not in question_data:
             raise HTTPException(status_code=400, detail="Question field required")
@@ -524,13 +587,12 @@ async def test_tts(text_data: dict):
             content={"success": False, "error": str(e)}
         )
 
-# CRITICAL: Make sure the server starts immediately
+# For production deployment (Render will use this automatically)
 if __name__ == "__main__":
     import uvicorn
     print(f"🚀 Starting AR Assistant API on port {PORT}")
     print("📝 Make sure your rag_engine.py, stt.py, and tts.py modules are available")
     
-    # Run with explicit configuration
     uvicorn.run(
         app, 
         host="0.0.0.0", 
@@ -538,8 +600,3 @@ if __name__ == "__main__":
         access_log=True,
         log_level="info"
     )
-
-# For production deployment (Render will use this)
-def create_app():
-    """Factory function for production deployment"""
-    return app
