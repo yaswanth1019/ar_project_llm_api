@@ -26,13 +26,16 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p uploads responses models
 
-# Download Vosk model at build time (faster startup)
-RUN wget -O /tmp/vosk.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip \
-    && unzip /tmp/vosk.zip -d models \
-    && rm /tmp/vosk.zip
+# Download Vosk model
+RUN if [ ! -d "models/vosk-model-small-en-us-0.15" ]; then \
+    wget -O models/vosk-model-small-en-us-0.15.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && \
+    cd models && \
+    unzip vosk-model-small-en-us-0.15.zip && \
+    rm vosk-model-small-en-us-0.15.zip; \
+    fi
 
-# Optional: tell Docker this container listens on port 10000 (Render ignores this)
+# Tell Render this container listens on $PORT
 EXPOSE 10000
 
-# Start app with dynamic $PORT from Render
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+# Start the app
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
