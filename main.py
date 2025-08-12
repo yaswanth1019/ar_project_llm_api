@@ -27,13 +27,29 @@ models_initialized = False
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown"""
-    # Startup
     global models_initialized
-    print("Initializing models...")
+    
+    print("🔄 Application starting up...")
+    print(f"📍 Port: {PORT}")
+    print(f"🌍 Environment: {os.environ.get('RENDER', 'local')}")
+    
+    # Don't block startup with heavy model loading - do it async
+    asyncio.create_task(initialize_models_async())
+    
+    # Always yield to allow the server to start
+    yield
+    
+    print("🔄 Application shutting down...")
+
+async def initialize_models_async():
+    """Initialize models asynchronously after server starts"""
+    global models_initialized
     try:
+        print("🤖 Initializing models in background...")
+        
         # Check if running on Render (or other cloud platform)
         if not os.path.exists("models/vosk-model-small-en-us-0.15"):
-            print("Vosk model not found. Downloading...")
+            print("📥 Vosk model not found. Downloading...")
             # Download and extract model
             import urllib.request
             import zipfile
@@ -46,19 +62,16 @@ async def lifespan(app: FastAPI):
                 zip_ref.extractall("models/")
             
             os.remove("models/model.zip")
-            print("✓ Vosk model downloaded and extracted")
+            print("✅ Vosk model downloaded and extracted")
         
-        initialize_models()
+        # Initialize models
+        await asyncio.get_event_loop().run_in_executor(None, initialize_models)
         models_initialized = True
-        print("✓ All models initialized successfully")
+        print("✅ All models initialized successfully")
+        
     except Exception as e:
-        print(f"✗ Failed to initialize models: {e}")
+        print(f"❌ Failed to initialize models: {e}")
         models_initialized = False
-    
-    yield
-    
-    # Shutdown (cleanup if needed)
-    print("Application shutting down...")
 
 app = FastAPI(
     title="AR Assistant API", 
