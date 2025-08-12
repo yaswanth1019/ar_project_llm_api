@@ -38,4 +38,4 @@ RUN if [ ! -d "models/vosk-model-small-en-us-0.15" ]; then \
 EXPOSE 10000
 
 # Start the app
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
+CMD python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
