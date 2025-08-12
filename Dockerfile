@@ -1,35 +1,40 @@
 FROM python:3.10-slim
 
-# Install system dependencies
+# Install system dependencies and clean up in one layer
 RUN apt-get update && apt-get install -y \
     wget \
     unzip \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Copy requirements first for better Docker layer caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app files
-COPY . .
+# Install Python dependencies and clean pip cache
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip cache purge
 
 # Create necessary directories
 RUN mkdir -p uploads responses models
 
-# Download smaller Vosk model (saves ~200MB RAM)
-RUN if [ ! -d "models/vosk-model-small-en-us-0.15" ]; then \
-    wget -O models/vosk-model-small-en-us-0.15.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && \
-    cd models && \
-    unzip vosk-model-small-en-us-0.15.zip && \
-    rm vosk-model-small-en-us-0.15.zip; \
-    fi
+# Download Vosk model, extract, and cleanup zip in one layer
+RUN cd models && \
+    wget -q -O vosk-model.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && \
+    unzip -q vosk-model.zip && \
+    rm -f vosk-model.zip && \
+    echo "Vosk model installed, zip file removed" && \
+    ls -la vosk-model-small-en-us-0.15/
+
+# Copy app files (do this after model download to leverage Docker cache)
+COPY . .
 
 # Set environment variables to reduce memory usage
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV TRANSFORMERS_CACHE=/tmp/transformers_cache
 ENV HF_HOME=/tmp/hf_cache
 
@@ -40,5 +45,5 @@ EXPOSE $PORT
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT:-10000}/health || exit 1
 
-# Start the app
-CMD python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1
+# Start the app with single worker to minimize memory usage
+CMD python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --timeout-keep-alive 30
