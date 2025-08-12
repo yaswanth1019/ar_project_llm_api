@@ -7,7 +7,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+# Get port from environment - this is critical for Render
 PORT = int(os.environ.get("PORT", 10000))
+print(f"🚀 Starting server on port {PORT}")
 
 
 # Import your modules
@@ -509,9 +511,22 @@ async def test_tts(text_data: dict):
             content={"success": False, "error": str(e)}
         )
 
-# Update the final run command
+# CRITICAL: Make sure the server starts immediately
 if __name__ == "__main__":
     import uvicorn
-    print("Starting AR Assistant API...")
-    print("Make sure your rag_engine.py, stt.py, and tts.py modules are properly configured")
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    print(f"🚀 Starting AR Assistant API on port {PORT}")
+    print("📝 Make sure your rag_engine.py, stt.py, and tts.py modules are available")
+    
+    # Run with explicit configuration
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=PORT,
+        access_log=True,
+        log_level="info"
+    )
+
+# For production deployment (Render will use this)
+def create_app():
+    """Factory function for production deployment"""
+    return app
