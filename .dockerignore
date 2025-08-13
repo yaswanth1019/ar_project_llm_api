@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+uploads/*
+responses/*
+models/*
+!models/.gitkeep
+
+# Cache
+.cache/
+.pytest_cache/
+.coverage
+
+# Documentation
+README.md
+docs/
+
+# Development files
+.env.example
+docker-compose.yml
+Dockerfile.dev
+
+# Large files that should be downloaded at runtime
+*.zip
+*.tar.gz
+*.model
