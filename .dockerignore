@@ -1,0 +1,15 @@
+# .dockerignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+README.md
+.env
+.venv
+uploads/*
+responses/*
+temp_audio/*
+vectorstore.pkl
+*.log

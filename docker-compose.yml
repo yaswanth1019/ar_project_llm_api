@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  ar-assistant:
+    build: .
+    ports:
+      - "10000:10000"
+    environment:
+      - PORT=10000
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/app/uploads
+      - ./responses:/app/responses
+      - ./temp_audio:/app/temp_audio
+      - ./tirumala_english_cleaned.json:/app/tirumala_english_cleaned.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
